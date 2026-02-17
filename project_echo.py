@@ -7,17 +7,16 @@ import json
 import time
 import random
 
-# --- Project Echo ---
-
 app = Ursina()
-GAME_NAME = "PROJECT: ECHO"
+GAME_NAME = 'PROJECT: ECHO'
 SUBTITLE = "GLOBAL CONFLICT" 
 VERSION = "0.1.2"
-STATUS = "PRE-ALPHA"
+STATUS = 'PRE-ALPHA'
 window.title = "Project: Echo - Global Conflict v.0.1.2 Pre-Alpha"
 window.borderless = False
 window.fullscreen = False
 window.vsync = False
+window.color = color.black # <--- ДОБАВИТЬ ЭТУ СТРОКУ (уберет белый фон окна)
 
 # --- НАСТРОЙКИ СЕТИ ---
 DEFAULT_IP = '26.69.138.152'
@@ -398,27 +397,52 @@ def crosshair_hit():
 
 # --- МЕНЮ ПОКУПКИ (БЕЛЫЙ СТИЛЬ) ---
 buy_menu_panel = None
+
 def toggle_buy_menu():
     global buy_menu_panel
     if game_state != "game": return
     
     if not buy_menu_panel:
         buy_menu_panel = Entity(parent=camera.ui, enabled=False)
-        # Фон меню белый полупрозрачный
-        Entity(parent=buy_menu_panel, model='quad', scale=(0.8, 0.8), color=color.rgba(255, 255, 255, 240))
-        # Заголовок черный
-        Text(text="SHOP", parent=buy_menu_panel, y=0.35, x=0, origin=(0,0), scale=2, color=color.black)
-        y_pos = 0.2
+        
+        # 1. ФОН ПАНЕЛИ
+        # ВАЖНО: z=1 отодвигает фон назад, чтобы он не перекрывал кнопки
+        Entity(parent=buy_menu_panel, model='quad', scale=(0.9, 0.9), 
+               color=color.rgb(30, 30, 30), z=1)
+        
+        # Заголовок
+        Text(text="WEAPON SHOP", parent=buy_menu_panel, y=0.38, x=0, 
+             origin=(0,0), scale=2, color=color.black, z=-1)
+        
+        y_pos = 0.25
         for name, stats in weapon_config.items():
-            if stats['price'] == 0: continue
-            # Кнопки светло-серые, текст черный
-            btn = Button(parent=buy_menu_panel, text=f"{name.upper()}   ${stats['price']}", scale=(0.5, 0.08), y=y_pos, color=color.light_gray, text_color=color.black)
+            # Убрали проверку цены, чтобы отображались все (включая нож)
+            
+            price_text = f"${stats['price']}" if stats['price'] > 0 else "FREE"
+            
+            # 2. КНОПКИ ОРУЖИЯ
+            # highlight_color делает кнопку светлее при наведении
+            # z=-1 гарантирует, что кнопка будет ПОВЕРХ фона
+            btn = Button(parent=buy_menu_panel, 
+                         text=f"{name.upper()}  [{price_text}]", 
+                         scale=(0.6, 0.08), 
+                         y=y_pos, 
+                         color=color.black,
+                         text_color=color.white,
+                         highlight_color=color.dark_gray,
+                         z=-1) 
+            
             btn.on_click = Func(buy_weapon, name, stats['price'])
-            y_pos -= 0.1
-        # Кнопка закрытия красная
-        Button(parent=buy_menu_panel, text="CLOSE", scale=(0.2, 0.06), y=-0.35, color=color.red, on_click=toggle_buy_menu)
+            y_pos -= 0.12 
+            
+        # 3. КНОПКА ЗАКРЫТЬ
+        Button(parent=buy_menu_panel, text="CLOSE MENU", scale=(0.3, 0.08), y=-0.35, 
+               color=color.red, text_color=color.black, highlight_color=color.pink, z=-1,
+               on_click=toggle_buy_menu)
 
     buy_menu_panel.enabled = not buy_menu_panel.enabled
+    
+    # Блокируем камеру и включаем курсор
     mouse.locked = not buy_menu_panel.enabled
     my_player.enabled = not buy_menu_panel.enabled
 
@@ -472,36 +496,38 @@ def create_main_menu():
     global menu_ui, nick_input, ip_input
     menu_ui = Entity(parent=camera.ui)
     
-    # Белый фон меню
-    Entity(parent=menu_ui, model='quad', scale=(2, 1), color=color.white)
+    # Фон меню (Черный, чтобы перекрыть все белое)
+    Entity(parent=menu_ui, model='quad', scale=(15, 10), color=color.black)
     
-    # --- БЛОК НАЗВАНИЯ ---
-    # Основное название (большое)
-    Text(parent=menu_ui, text=GAME_NAME, origin=(0,0), y=0.38, scale=5, color=color.black)
-    
-    # Подзаголовок (чуть меньше, под основным названием)
-    Text(parent=menu_ui, text=SUBTITLE, origin=(0,0), y=0.31, scale=2, color=color.dark_gray)
-    
-    # Версия в углу (черный текст)
-    Text(parent=menu_ui, text=f'{STATUS} v.{VERSION}', 
-         position=(0.6, -0.45), scale=1.2, color=color.black)
+    # Название игры
+    Text(parent=menu_ui, text=GAME_NAME, origin=(0,0), y=0.38, scale=5, color=color.white)
+    Text(parent=menu_ui, text=SUBTITLE, origin=(0,0), y=0.31, scale=2, color=color.light_gray)
+    Text(parent=menu_ui, text=f'{STATUS} v.{VERSION}', position=(0.6, -0.45), scale=1.2, color=color.gray)
 
-    # --- ПОЛЯ ВВОДА (остаются из вашего кода) ---
-    Text(parent=menu_ui, text='NICKNAME', position=(-0.25, 0.05), scale=1.5, color=color.black)
+    # --- ПОЛЯ ВВОДА ---
+    Text(parent=menu_ui, text='NICKNAME', position=(-0.25, 0.05), scale=1.5, color=color.white)
     nick_input = InputField(parent=menu_ui, default_value='Player1', y=0.0, 
-                            scale=(0.4, 0.05), color=color.light_gray, text_color=color.black)
+                            scale=(0.4, 0.05), color=color.dark_gray, text_color=color.white)
     
-    Text(parent=menu_ui, text='SERVER IP', position=(-0.25, -0.1), scale=1.5, color=color.black)
+    Text(parent=menu_ui, text='SERVER IP', position=(-0.25, -0.1), scale=1.5, color=color.white)
     ip_input = InputField(parent=menu_ui, default_value=DEFAULT_IP, y=-0.15, 
-                          scale=(0.4, 0.05), color=color.light_gray, text_color=color.black)
+                          scale=(0.4, 0.05), color=color.dark_gray, text_color=color.white)
 
-    # Кнопки
+    # --- КНОПКИ (ИСПРАВЛЕННЫЕ) ---
+    # Кнопка HOST (Синяя)
     b_host = Button(parent=menu_ui, text='HOST GAME', y=-0.3, x=-0.2, 
-                    scale=(0.3, 0.08), color=color.azure, text_color=color.black)
+                    scale=(0.3, 0.08), 
+                    color=color.blue,           # <--- СИНИЙ ЦВЕТ
+                    text_color=color.white,     # Белый текст
+                    highlight_color=color.cyan) # При наведении светлее
     b_host.on_click = on_host
     
+    # Кнопка JOIN (Зеленая)
     b_join = Button(parent=menu_ui, text='JOIN GAME', y=-0.3, x=0.2, 
-                    scale=(0.3, 0.08), color=color.orange, text_color=color.black)
+                    scale=(0.3, 0.08), 
+                    color=color.green,          # <--- ЗЕЛЕНЫЙ ЦВЕТ
+                    text_color=color.white,     # Белый текст
+                    highlight_color=color.lime) # При наведении светлее
     b_join.on_click = on_connect
 
 def on_host():
