@@ -6,6 +6,8 @@ import threading
 import json
 import time
 import random
+import json
+import os #
 
 app = Ursina()
 GAME_NAME = 'PROJECT: ECHO'
@@ -28,6 +30,8 @@ my_player = None
 enemy_entity = None
 score_ct = 0
 score_t = 0
+map_spawns_ct = []
+map_spawns_t = []
 
 # Инициализируем сокет
 socket_obj = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -476,7 +480,10 @@ def die():
 
 def respawn():
     global game_state
-    spawn_pos = (-30, 1, 0) if is_server else (30, 1, 0)
+    
+    # ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ
+    spawn_pos = get_spawn_point(my_player.team)
+    
     my_player.position = spawn_pos
     my_player.hp = 100
     if 'pistol' not in my_player.inventory:
@@ -537,6 +544,54 @@ def on_connect():
 
 # ================= КАРТА И ОСВЕЩЕНИЕ =================
 def create_map():
+    global map_spawns_ct, map_spawns_t
+    
+    # 1. ОСВЕЩЕНИЕ И ОКРУЖЕНИЕ
+    sun = DirectionalLight(shadows=True)
+    sun.look_at(Vec3(1, -1, -0.5)) 
+    sun.shadow_map_resolution = Vec2(4096, 4096) 
+    AmbientLight(color=color.rgb(30, 30, 35))
+    Sky(color=color.rgb(50, 50, 70))
+    
+    # Пол (чтобы не падать, если карта пустая)
+    Entity(model='plane', scale=200, texture='floor', 
+           texture_scale=(40,40), collider='box', 
+           shader=lit_with_shadows_shader, position=(0,0,0)) 
+
+    # 2. ЗАГРУЗКА ИЗ JSON
+    if os.path.exists('level_data.json'):
+        print("Загрузка карты из JSON...")
+        with open('level_data.json', 'r') as f:
+            data = json.load(f)
+            
+            blocks_to_load = []
+
+            # Проверка формата (Новый словарь или Старый список)
+            if isinstance(data, dict):
+                # НОВЫЙ ФОРМАТ РЕДАКТОРА
+                blocks_to_load = data.get('blocks', [])
+                map_spawns_ct[:] = data.get('spawns_ct', []) # Копируем список
+                map_spawns_t[:] = data.get('spawns_t', [])   # Копируем список
+            elif isinstance(data, list):
+                # СТАРЫЙ ФОРМАТ (только блоки)
+                blocks_to_load = data
+            
+            # Создаем блоки
+            for block in blocks_to_load:
+                Entity(
+                    model='cube',
+                    position=block['pos'],
+                    scale=block.get('scale', (1,1,1)), # Учитываем масштаб из редактора
+                    texture=block['tex'],
+                    collider='box',
+                    shader=lit_with_shadows_shader
+                )
+    else:
+        print("Файл карты не найден, загружаю дефолтную...")
+        create_default_map()
+
+def create_default_map():
+    # Твой старый код создания стен, если файла нет
     # 1. ОСВЕЩЕНИЕ
     # Поворачиваем солнце, чтобы тени были длиннее и виднее
     sun = DirectionalLight(shadows=True)
@@ -564,6 +619,18 @@ def create_map():
         {'pos': (30, 5, -20), 'scale': (40, 10, 2)},
     ]
     
+def get_spawn_point(team):
+        # Если команда CT и есть точки спавна для CT
+    if team == 'ct' and map_spawns_ct:
+        return random.choice(map_spawns_ct)
+        
+    # Если команда T и есть точки спавна для T
+    elif team == 't' and map_spawns_t:
+        return random.choice(map_spawns_t)
+            
+    # ДЕФОЛТНЫЕ ТОЧКИ (если в карте не расставили спавны)
+    return (-40, 2, 0) if team == 'ct' else (40, 2, 0)
+    
     for w in walls:
         Entity(model='cube', position=w['pos'], scale=w['scale'], 
                texture='brick', texture_scale=(w['scale'][0]/2, w['scale'][1]/2), 
@@ -583,12 +650,15 @@ def start_game(mode, ip_addr, nick):
     game_state = "game"
     is_server = (mode == 'server')
     
-    create_map()
+    create_map() # Сначала грузим карту, чтобы заполнились списки спавнов!
     create_ui()
     update_score_ui()
     
-    start_pos = (-40, 1, 0) if is_server else (40, 1, 0)
+    # Определяем команду
     team = 'ct' if is_server else 't'
+    
+    # ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ
+    start_pos = get_spawn_point(team)
     
     my_player = Player(position=start_pos, team=team)
     
