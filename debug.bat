@@ -1,0 +1,2 @@
+python redactor.py
+pause
