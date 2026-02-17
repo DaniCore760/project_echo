@@ -1,317 +1,322 @@
 from ursina import *
+from ursina.shaders import lit_with_shadows_shader
 import json
+import os
+from functools import partial
 
 app = Ursina()
-window.title = "CS: Ursina Map Editor"
-window.borderless = False
-window.exit_button.visible = False
 
-# --- КОНФИГУРАЦИЯ ---
-available_textures = ['brick', 'grass', 'dirt', 'stone', 'crate', 'white_cube']
-default_texture = 'brick'
+# --- НАСТРОЙКИ ---
+window.title = "Project Echo - Map Editor"
+window.borderless = True
+window.fullscreen = False
 
-# Список всех блоков сцены
-map_blocks = []
+# Путь к папке с текстурами
+TEXTURES_DIR = 'assets/textures'
+if not os.path.exists(TEXTURES_DIR):
+    os.makedirs(TEXTURES_DIR)
+
+# Списки объектов
+placed_blocks = []
+ct_spawns = []
+t_spawns = []
+
+# Текущее состояние
+current_texture = 'brick'
 selected_block = None
+current_tool = 'block' # 'block', 'ct', 't'
 
-# --- UI ЭЛЕМЕНТЫ (Ссылки) ---
-prop_panel = None
-pos_inputs = []
-rot_inputs = []
-scale_inputs = []
-texture_buttons = []
+# --- ЗАГОЛОВОК ---
+Text(text='Map Editor TINTool', origin=(0,0), y=0.45, scale=2, color=color.cyan, background=True)
 
-# ================= КЛАСС СВОБОДНОЙ КАМЕРЫ =================
+# --- КАМЕРА ---
 class FreeCamera(Entity):
     def __init__(self):
         super().__init__()
-        self.speed = 10
-        self.sensitivity = 40
-        camera.parent = self
+        self.speed = 20
+        self.camera_pivot = Entity(parent=self)
+        camera.parent = self.camera_pivot
         camera.position = (0,0,0)
         camera.rotation = (0,0,0)
         self.position = (0, 10, -20)
         self.rotation_x = 30
-        
-        # Состояние мыши
-        self.rotating = False
 
     def update(self):
-        # Вращение камеры (только если зажата ПКМ)
-        if held_keys['right mouse']:
-            if not self.rotating:
-                self.rotating = True
-                mouse.locked = True
-            
-            self.rotation_y += mouse.velocity[0] * self.sensitivity
-            self.rotation_x -= mouse.velocity[1] * self.sensitivity
-        else:
-            if self.rotating:
-                self.rotating = False
-                mouse.locked = False
+        if mouse.hovered_entity and isinstance(mouse.hovered_entity, (Slider, Button)):
+            return
 
-        # Перемещение (WASD + QE)
+        if mouse.middle: 
+            self.rotation_y += mouse.velocity[0] * 100
+            self.camera_pivot.rotation_x -= mouse.velocity[1] * 100
+            self.camera_pivot.rotation_x = clamp(self.camera_pivot.rotation_x, -90, 90)
+
         direction = Vec3(
             self.forward * (held_keys['w'] - held_keys['s'])
             + self.right * (held_keys['d'] - held_keys['a'])
-            + self.up * (held_keys['e'] - held_keys['q'])
+            + self.up * (held_keys['e'] - held_keys['q']) 
         ).normalized()
 
-        # Ускорение на Shift
-        move_speed = self.speed * (2 if held_keys['shift'] else 1)
-        self.position += direction * move_speed * time.dt
-
-    def input(self, key):
-        # Зум / Скорость колесиком
-        if key == 'scroll up':
-            self.speed += 2
-        if key == 'scroll down':
-            self.speed = max(1, self.speed - 2)
+        self.position += direction * self.speed * time.dt
 
 editor_cam = FreeCamera()
 
-# ================= УПРАВЛЕНИЕ БЛОКАМИ =================
+# --- UI: ВЫБОР ИНСТРУМЕНТА (ЛЕВАЯ ПАНЕЛЬ) ---
+tools_bg = Entity(parent=camera.ui, model='quad', color=color.rgba(0,0,0,0.8), 
+                  scale=(0.25, 0.4), position=(-0.75, 0.2))
+Text(parent=tools_bg, text="TOOLS", origin=(0, 0), y=0.4, scale=1.5)
 
-def create_block(position=(0,0,0), scale=(1,1,1), rotation=(0,0,0), texture_name='brick', color_val=color.white):
-    e = Entity(
-        model='cube',
-        position=position,
-        scale=scale,
-        rotation=rotation,
-        texture=texture_name,
-        color=color_val,
-        collider='box',
-        shader=None # В редакторе используем простой шейдер для четкости
-    )
-    e.texture_name = texture_name # Запоминаем имя текстуры для сохранения
-    map_blocks.append(e)
-    return e
+def set_tool(tool_name):
+    global current_tool
+    current_tool = tool_name
+    
+    # Визуальное обновление кнопок
+    btn_block_mode.color = color.green if tool_name == 'block' else color.gray
+    btn_ct_spawn.color = color.blue if tool_name == 'ct' else color.gray
+    btn_t_spawn.color = color.red if tool_name == 't' else color.gray
+    
+    # Если перешли в режим спавнов, снимаем выделение с блока
+    if tool_name != 'block':
+        deselect_block()
 
-def add_new_block():
-    # Создаем блок перед камерой
-    pos = editor_cam.position + editor_cam.forward * 5
-    pos = Vec3(round(pos.x), round(pos.y), round(pos.z)) # Округляем для удобства
-    select_block(create_block(position=pos))
+btn_block_mode = Button(parent=tools_bg, text='Add Blocks', scale=(0.8, 0.2), y=0.15, color=color.green)
+btn_block_mode.on_click = partial(set_tool, 'block')
 
-def delete_selected():
-    global selected_block
-    if selected_block:
-        map_blocks.remove(selected_block)
-        destroy(selected_block)
-        selected_block = None
-        update_ui_values()
-        print("Block deleted")
+btn_ct_spawn = Button(parent=tools_bg, text='Add CT Spawn', scale=(0.8, 0.2), y=-0.05, color=color.gray)
+btn_ct_spawn.on_click = partial(set_tool, 'ct')
 
-def duplicate_selected():
-    if selected_block:
-        new_b = create_block(
-            position=selected_block.position + Vec3(1,1,1),
-            scale=selected_block.scale,
-            rotation=selected_block.rotation,
-            texture_name=selected_block.texture_name,
-            color_val=selected_block.color
-        )
-        select_block(new_b)
+btn_t_spawn = Button(parent=tools_bg, text='Add T Spawn', scale=(0.8, 0.2), y=-0.25, color=color.gray)
+btn_t_spawn.on_click = partial(set_tool, 't')
 
+
+# --- МЕНЮ РЕДАКТИРОВАНИЯ БЛОКА ---
+edit_panel = Entity(parent=camera.ui, position=(-0.85, -0.25), enabled=False)
+edit_bg = Entity(parent=edit_panel, model='quad', color=color.rgba(0,0,0,0.8), scale=(0.4, 0.5), x=0.15)
+Text(parent=edit_panel, text="BLOCK SETTINGS", position=(0, 0.2), scale=1.5)
+
+def update_scale_x():
+    if selected_block: selected_block.scale_x = slider_x.value
+def update_scale_y():
+    if selected_block: selected_block.scale_y = slider_y.value
+def update_scale_z():
+    if selected_block: selected_block.scale_z = slider_z.value
+
+slider_x = Slider(parent=edit_panel, min=1, max=10, default=1, text='Size X', y=0.1, step=1, dynamic=True, on_value_changed=update_scale_x)
+slider_y = Slider(parent=edit_panel, min=1, max=10, default=1, text='Size Y', y=0.0, step=1, dynamic=True, on_value_changed=update_scale_y)
+slider_z = Slider(parent=edit_panel, min=1, max=10, default=1, text='Size Z', y=-0.1, step=1, dynamic=True, on_value_changed=update_scale_z)
+
+lbl_selected_tex = Text(parent=edit_panel, text="Texture: None", position=(0, -0.2), scale=1)
+
+# --- ВЫДЕЛЕНИЕ ---
 def select_block(entity):
     global selected_block
-    
-    # Сброс подсветки предыдущего
-    if selected_block:
-        selected_block.color = color.white 
-
-    selected_block = entity
-    selected_block.color = color.lime # Подсветка выделения
-    update_ui_values()
-
-# ================= UI ПАНЕЛЬ =================
-
-def create_ui():
-    global prop_panel, pos_inputs, rot_inputs, scale_inputs
-    
-    # Правая панель
-    prop_panel = WindowPanel(
-        title='Block Properties',
-        content=[],
-        position=(0.6, 0.45), # Сдвинем чуть левее, чтобы влезало
-        scale=(0.3, 0.6),     # Чуть увеличим высоту
-        color=color.rgba(0,0,0,150) # Полупрозрачный фон
-    )
-    
-    # --- Кнопки действий ---
-    # ВАЖНО: Добавляем текст в content, чтобы он занимал место
-    prop_panel.content.append(Text(text="Actions:", scale=0.8, color=color.light_gray))
-    
-    action_row = Entity(parent=prop_panel, scale_y=0.05)
-    # Кнопки делаем чуть меньше и аккуратнее
-    Button(text='ADD', color=color.azure, scale=(0.25, 0.05), position=(-0.26, 0), parent=action_row, on_click=add_new_block)
-    Button(text='DUP', color=color.orange, scale=(0.25, 0.05), position=(0.0, 0), parent=action_row, on_click=duplicate_selected)
-    Button(text='DEL', color=color.red, scale=(0.25, 0.05), position=(0.26, 0), parent=action_row, on_click=delete_selected)
-    prop_panel.content.append(action_row)
-
-    # Отступ
-    prop_panel.content.append(Entity(scale_y=0.01))
-
-    # --- Поля ввода (Transform) ---
-    def create_xyz_input(label):
-        # Добавляем заголовок в контент
-        prop_panel.content.append(Text(text=label, scale=0.8, color=color.light_gray))
-        
-        row = Entity(parent=prop_panel, scale_y=0.05)
-        inputs = []
-        for i, axis in enumerate(['x', 'y', 'z']):
-            # Расставляем поля шире
-            inp = InputField(default_value='0', limit_content_to='0123456789.-', 
-                             position=((i-1)*0.28, 0), scale=(0.25, 0.05), parent=row)
-            inp.text_entity.scale = 0.7 # Уменьшаем текст внутри поля, чтобы влезал
-            inp.on_submit = apply_transform 
-            inputs.append(inp)
-        prop_panel.content.append(row)
-        return inputs
-
-    pos_inputs = create_xyz_input("Position (X, Y, Z)")
-    rot_inputs = create_xyz_input("Rotation (X, Y, Z)")
-    scale_inputs = create_xyz_input("Scale (X, Y, Z)")
-    
-    # Отступ
-    prop_panel.content.append(Entity(scale_y=0.02))
-    
-    # Кнопка применения изменений (ИСПРАВЛЕНА ГИГАНТСКАЯ КНОПКА)
-    # Оборачиваем кнопку в Entity-контейнер или задаем ей scale внутри списка, 
-    # но надежнее просто добавить её как отдельный элемент с четким размером
-    apply_btn = Button(text='Apply Transform', color=color.dark_gray, scale_y=0.05, height=0.05)
-    apply_btn.on_click = apply_transform
-    prop_panel.content.append(apply_btn)
-
-    # --- Текстуры ---
-    prop_panel.content.append(Entity(scale_y=0.02))
-    prop_panel.content.append(Text(text="Textures:", scale=0.8, color=color.light_gray))
-    
-    tex_row = Entity(parent=prop_panel, scale_y=0.12) # Увеличим высоту контейнера текстур
-    x_off = -0.3
-    y_off = 0.02
-    for i, tex in enumerate(available_textures):
-        b = Button(parent=tex_row, text=tex, scale=(0.2, 0.04), position=(x_off, y_off), color=color.gray)
-        b.text_entity.scale = 0.6
-        b.on_click = Func(apply_texture, tex)
-        x_off += 0.22
-        if i == 2: # Перенос строки
-            x_off = -0.3
-            y_off = -0.05
-    prop_panel.content.append(tex_row)
-
-    # --- Save / Load ---
-    prop_panel.content.append(Text(text="System:", scale=0.8, color=color.light_gray))
-    sys_row = Entity(parent=prop_panel, scale_y=0.05)
-    Button(text='SAVE', color=color.green, scale=(0.4, 0.05), position=(-0.22, 0), parent=sys_row, on_click=save_map)
-    Button(text='LOAD', color=color.yellow, scale=(0.4, 0.05), position=(0.22, 0), parent=sys_row, on_click=load_map)
-    prop_panel.content.append(sys_row)
-
-def update_ui_values():
-    if not selected_block: return
-    try:
-        # Position
-        pos_inputs[0].text = str(round(selected_block.x, 2))
-        pos_inputs[1].text = str(round(selected_block.y, 2))
-        pos_inputs[2].text = str(round(selected_block.z, 2))
-        # Rotation
-        rot_inputs[0].text = str(round(selected_block.rotation_x, 2))
-        rot_inputs[1].text = str(round(selected_block.rotation_y, 2))
-        rot_inputs[2].text = str(round(selected_block.rotation_z, 2))
-        # Scale
-        scale_inputs[0].text = str(round(selected_block.scale_x, 2))
-        scale_inputs[1].text = str(round(selected_block.scale_y, 2))
-        scale_inputs[2].text = str(round(selected_block.scale_z, 2))
-    except:
-        pass
-
-def apply_transform():
-    if not selected_block: return
-    try:
-        selected_block.position = (float(pos_inputs[0].text), float(pos_inputs[1].text), float(pos_inputs[2].text))
-        selected_block.rotation = (float(rot_inputs[0].text), float(rot_inputs[1].text), float(rot_inputs[2].text))
-        selected_block.scale = (float(scale_inputs[0].text), float(scale_inputs[1].text), float(scale_inputs[2].text))
-    except ValueError:
-        print("Invalid input")
-
-def apply_texture(tex_name):
-    if selected_block:
-        selected_block.texture = tex_name
-        selected_block.texture_name = tex_name
-
-# ================= SAVE / LOAD =================
-
-def save_map():
-    data = []
-    for b in map_blocks:
-        block_data = {
-            'pos': [b.x, b.y, b.z],
-            'rot': [b.rotation_x, b.rotation_y, b.rotation_z],
-            'scale': [b.scale_x, b.scale_y, b.scale_z],
-            'texture': getattr(b, 'texture_name', 'brick'),
-            'color': [b.color.r, b.color.g, b.color.b, b.color.a] # Сохраняем цвет на всякий случай
-        }
-        data.append(block_data)
-    
-    with open('level_data.json', 'w') as f:
-        json.dump(data, f)
-    
-    print_on_screen("Map Saved to level_data.json!", duration=2)
-
-def load_map():
-    global map_blocks, selected_block
-    
-    if not os.path.exists('level_data.json'):
-        print_on_screen("No level_data.json found!", color=color.red)
+    # Если кликнули на спавн, не выделяем его как блок для растягивания
+    if entity in ct_spawns or entity in t_spawns:
         return
 
-    # Очистка текущей сцены
-    for b in map_blocks:
-        destroy(b)
-    map_blocks = []
-    selected_block = None
+    if selected_block: selected_block.color = color.white
 
-    with open('level_data.json', 'r') as f:
-        data = json.load(f)
+    selected_block = entity
+    selected_block.color = color.lime 
+    edit_panel.enabled = True
+    
+    slider_x.value = entity.scale_x
+    slider_y.value = entity.scale_y
+    slider_z.value = entity.scale_z
+    
+    tex_name = getattr(entity, 'my_texture_name', 'Unknown')
+    lbl_selected_tex.text = f"Texture: {os.path.basename(tex_name)}"
 
-    for d in data:
-        # Восстанавливаем цвет (если он не лаймовый от выделения)
-        col = color.rgba(d['color'][0]*255, d['color'][1]*255, d['color'][2]*255, d['color'][3]*255)
-        # При загрузке сбрасываем лайм на белый, так как объект не выделен
-        col = color.white 
+def deselect_block():
+    global selected_block
+    if selected_block:
+        selected_block.color = color.white 
+        selected_block = None
+    edit_panel.enabled = False
 
-        create_block(
-            position=tuple(d['pos']),
-            rotation=tuple(d['rot']),
-            scale=tuple(d['scale']),
-            texture_name=d['texture'],
-            color_val=col
+# --- ПАНЕЛЬ ТЕКСТУР ---
+assets_bg = Entity(parent=camera.ui, model='quad', color=color.rgba(0,0,0,0.8), 
+                   scale=(0.3, 1.5), position=(0.75, 0), z=1)
+Text(parent=assets_bg, text="TEXTURES", origin=(0, 0), position=(0, 0.45), scale=2, color=color.white)
+
+texture_buttons = []
+
+def set_current_texture(tex_path):
+    global current_texture
+    if selected_block:
+        apply_texture_safely(selected_block, tex_path)
+        lbl_selected_tex.text = f"Texture:\n{os.path.basename(tex_path)}"
+        current_texture = tex_path 
+    else:
+        current_texture = tex_path
+    
+    # Визуальное выделение выбранной текстуры
+    for btn in texture_buttons:
+        btn.color = color.green if hasattr(btn, 'my_tex_path') and btn.my_tex_path == tex_path else color.white
+
+def refresh_asset_panel():
+    for btn in texture_buttons: destroy(btn)
+    texture_buttons.clear()
+
+    files = []
+    if os.path.exists(TEXTURES_DIR):
+        files = [f for f in os.listdir(TEXTURES_DIR) if f.lower().endswith('.png')]
+    
+    start_x = 0.65
+    start_y = 0.35
+    x_offset = 0
+    y_offset = 0
+    
+    for i, file_name in enumerate(files):
+        full_path = f'{TEXTURES_DIR}/{file_name}'
+        btn = Button(
+            parent=camera.ui,
+            model='quad',
+            texture=full_path,
+            scale=(0.09, 0.09),
+            position=(start_x + x_offset, start_y - y_offset),
+            color=color.white,
+            highlight_color=color.lime
         )
-    print_on_screen("Map Loaded!", duration=2)
+        btn.my_tex_path = full_path
+        btn.on_click = partial(set_current_texture, full_path)
+        btn.tooltip = Tooltip(file_name)
+        texture_buttons.append(btn)
+        
+        x_offset += 0.1
+        if (i + 1) % 2 == 0:
+            x_offset = 0
+            y_offset += 0.11
 
-# ================= ВВОД МЫШИ (RAYCAST) =================
+refresh_btn = Button(parent=camera.ui, text='REFRESH', scale=(0.2, 0.05), position=(0.75, 0.42), color=color.azure)
+refresh_btn.on_click = refresh_asset_panel
+refresh_asset_panel()
+
+# --- ФУНКЦИИ СОЗДАНИЯ ОБЪЕКТОВ ---
+def apply_texture_safely(entity, tex_path):
+    entity.my_texture_name = tex_path 
+    entity.texture = tex_path
+
+def create_block(position, texture_name):
+    b = Entity(model='cube', position=position, 
+               collider='box', shader=lit_with_shadows_shader)
+    apply_texture_safely(b, texture_name)
+    placed_blocks.append(b)
+    return b
+
+def create_ct_spawn(position):
+    # Полупрозрачный синий куб
+    s = Entity(model='cube', position=position, collider='box',
+               color=color.rgba(0, 0, 255, 128), texture='white_cube')
+    ct_spawns.append(s)
+    return s
+
+def create_t_spawn(position):
+    # Полупрозрачный красный куб
+    s = Entity(model='cube', position=position, collider='box',
+               color=color.rgba(255, 0, 0, 128), texture='white_cube')
+    t_spawns.append(s)
+    return s
+
+# --- СОХРАНЕНИЕ ---
+def save_map():
+    # Собираем блоки
+    blocks_data = []
+    for b in placed_blocks:
+        tex_name = getattr(b, 'my_texture_name', 'brick')
+        blocks_data.append({
+            'pos': (b.x, b.y, b.z),
+            'scale': (b.scale_x, b.scale_y, b.scale_z),
+            'tex': tex_name 
+        })
+    
+    # Собираем спавны (только координаты)
+    ct_data = [(s.x, s.y, s.z) for s in ct_spawns]
+    t_data = [(s.x, s.y, s.z) for s in t_spawns]
+
+    full_data = {
+        "blocks": blocks_data,
+        "spawns_ct": ct_data,
+        "spawns_t": t_data
+    }
+
+    with open('level_data.json', 'w') as f:
+        json.dump(full_data, f, indent=4)
+    
+    print_on_screen("Map Saved!", position=(0,0), scale=2, duration=2)
+
+save_btn = Button(text='SAVE MAP', scale=(0.2, 0.05), position=(0.7, -0.4), color=color.azure)
+save_btn.on_click = save_map
+
+# --- INPUT (ЛОГИКА СЕТКИ И СТРОИТЕЛЬСТВА) ---
 def input(key):
+    global current_texture
+    
+    # УДАЛЕНИЕ (DELETE)
+    if key == 'delete':
+        target = None
+        if selected_block:
+            target = selected_block
+            deselect_block()
+        elif mouse.hovered_entity:
+             target = mouse.hovered_entity
+
+        if target:
+            if target in placed_blocks:
+                placed_blocks.remove(target)
+                destroy(target)
+            elif target in ct_spawns:
+                ct_spawns.remove(target)
+                destroy(target)
+            elif target in t_spawns:
+                t_spawns.remove(target)
+                destroy(target)
+
+    # ЛКМ - УСТАНОВКА
     if key == 'left mouse down':
-        # Не выделяем блоки, если кликнули по UI
-        if mouse.hovered_entity and mouse.hovered_entity.parent == prop_panel:
-            return
+        if mouse.hovered_entity and not isinstance(mouse.hovered_entity, (Button, Tooltip, Slider)):
+             
+             build_position = (0,0,0)
+             
+             # Если клик по ПОЛУ: округляем X/Z, Y ставим на 0.5 (первый слой)
+             if mouse.hovered_entity == base_floor:
+                 x = round(mouse.world_point.x)
+                 z = round(mouse.world_point.z)
+                 build_position = (x, 0.5, z)
+             
+             # Если клик по БЛОКУ или СПАВНУ: ставим ровно к соседней грани
+             else:
+                 # Позиция существующего блока + нормаль (направление грани)
+                 # Это гарантирует идеальное примыкание без округления дробных координат удара
+                 build_position = mouse.hovered_entity.position + mouse.normal
 
-        hit = raycast(camera.world_position, camera.forward, distance=100)
-        if hit.hit:
-            if hit.entity in map_blocks:
-                select_block(hit.entity)
-        else:
-            # Клик в пустоту - снятие выделения
-            if selected_block:
-                selected_block.color = color.white
-                selected_block = None
+             # Создаем объект в зависимости от выбранного инструмента
+             if current_tool == 'block':
+                 create_block(build_position, current_texture)
+             elif current_tool == 'ct':
+                 create_ct_spawn(build_position)
+             elif current_tool == 't':
+                 create_t_spawn(build_position)
 
-# --- Инициализация ---
-# Небо и земля для ориентира
-Sky(color=color.rgb(50, 50, 70))
-Entity(model='plane', scale=200, texture='floor', texture_scale=(40,40), color=color.dark_gray, collider='box')
+    # ПКМ - ВЫДЕЛЕНИЕ (Только для блоков)
+    if key == 'right mouse down':
+        if mouse.hovered_entity and mouse.hovered_entity in placed_blocks:
+            # Если инструмент - спавн, мы не хотим выделять блоки, чтобы не сбивать фокус
+            if current_tool == 'block':
+                select_block(mouse.hovered_entity)
+                Audio('ursina/assets/sounds/button_click.wav', volume=0.5, pitch=1.5)
+        elif not mouse.hovered_entity or mouse.hovered_entity == base_floor:
+            deselect_block()
 
-create_ui()
-add_new_block() # Создать один блок для старта
+# --- СЦЕНА ---
+# Пол с сеткой
+base_floor = Entity(
+    model='plane', 
+    scale=100, 
+    texture='white_cube', 
+    texture_scale=(100,100), 
+    collider='box', 
+    color=color.gray
+)
+DirectionalLight(parent=editor_cam, y=2, z=3, shadows=True, rotation=(45, -45, 45))
 
 app.run()
