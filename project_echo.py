@@ -7,6 +7,8 @@ import json
 import time
 import random
 
+# --- Project Echo ---
+
 app = Ursina()
 GAME_NAME = "PROJECT: ECHO"
 SUBTITLE = "GLOBAL CONFLICT" 
